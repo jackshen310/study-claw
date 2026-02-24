@@ -10,20 +10,21 @@
 
 ### 模块一：整体架构与启动流程 ✅ [笔记](./01-architecture/README.md)
 
-- [x] 1.1 Claude Code 的定位：CLI 工具 vs Agent 系统
-- [x] 1.2 进程启动流程：入口文件 → 初始化链路
-- [x] 1.3 核心组件拆解：前端交互层 / Agent 核心层 / 工具执行层
-- [x] 1.4 与 Anthropic API 的通信协议（SSE 流式响应）
+- [x] 1.1 Claude Code 的定位：CLI 外观，Agent 内核
+- [x] 1.2 运行时与发布形态
+- [x] 1.3 进程启动流程（配置优先级、环境变量）
+- [x] 1.4 三层架构与组件职责
+- [x] 1.5 与 Anthropic API 的通信协议（SSE）
 
 ---
 
 ### 模块二：Agent Loop（智能体循环）⭐ 最核心 ✅ [笔记](./02-agent-loop/README.md)
 
 - [x] 2.1 Think → Tool Call → Observe 三步循环原理
-- [x] 2.2 何时终止循环：停止条件判断逻辑
-- [x] 2.3 多轮对话的 `messages` 数组如何演化
-- [x] 2.4 错误恢复机制：工具报错后如何重试
-- [x] 2.5 实验：手动构造 API 请求模拟一次 Agent Loop
+- [x] 2.2 何时终止循环：stop_reason 决策逻辑
+- [x] 2.3 messages 数组的演化与记忆机制
+- [x] 2.4 错误恢复机制与死循环防护
+- [x] 2.5 实验：手动模拟一次 Agent Loop
 
 ---
 
@@ -41,10 +42,10 @@
 ### 模块四：Permission 权限与安全模型 ✅ [笔记](./04-permission/README.md)
 
 - [x] 4.1 危险操作识别：哪些操作需要用户确认
-- [x] 4.2 `--dangerously-skip-permissions` 参数的风险
-- [x] 4.3 沙箱机制：对文件系统操作的限制边界
-- [x] 4.4 Bash 执行安全策略：命令白/黑名单
-- [x] 4.5 网络请求的权限控制
+- [x] 4.2 三层权限规则：allow / ask / deny
+- [x] 4.3 `--dangerously-skip-permissions` 参数的风险
+- [x] 4.4 沙箱机制：文件系统与网络隔离
+- [x] 4.5 Bash 执行安全策略
 
 ---
 
@@ -53,8 +54,8 @@
 - [x] 5.1 Token 计算机制与 context 预算管理
 - [x] 5.2 上下文超限时的压缩策略（Summarization）
 - [x] 5.3 对话历史的 Truncation 策略
-- [x] 5.4 大文件处理：如何避免一次性塞入大量代码
-- [x] 5.5 实验：验证 context 超限时的行为
+- [x] 5.4 大文件处理：避免一次性塞入大量代码
+- [x] 5.5 Prompt Caching 的原理与收益
 
 ---
 
@@ -62,16 +63,16 @@
 
 - [x] 6.1 CLAUDE.md 的加载时机与优先级
 - [x] 6.2 项目级 vs 用户级 vs 目录级配置
-- [x] 6.3 如何通过 CLAUDE.md 注入自定义 System Prompt
-- [x] 6.4 最佳实践：CLAUDE.md 应该写什么
-- [x] 6.5 实验：编写一份有效的 CLAUDE.md
+- [x] 6.3 如何通过 CLAUDE.md 注入 System Prompt
+- [x] 6.4 CLAUDE.md 的 import 语法
+- [x] 6.5 最佳实践：如何写出高信噪比规则
 
 ---
 
 ### 模块七：Subagent 子智能体机制 ✅ [笔记](./07-subagent/README.md)
 
 - [x] 7.1 Task 拆分原理：何时启动 Subagent
-- [x] 7.2 主 Agent 与 Subagent 之间的通信方式
+- [x] 7.2 主 Agent 与 Subagent 的通信方式
 - [x] 7.3 并行 Subagent 的调度与结果聚合
 - [x] 7.4 Task.md 任务追踪文件的生命周期
 - [x] 7.5 实验：触发一次多 Subagent 协作任务

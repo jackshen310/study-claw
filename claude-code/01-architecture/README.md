@@ -6,7 +6,7 @@
 
 ---
 
-## 1.1 Claude Code 的定位：CLI 工具 vs Agent 系统
+## 1.1 Claude Code 的定位：CLI 外观，Agent 内核
 
 ### 表面：一个 CLI 工具
 
@@ -20,9 +20,7 @@ claude -p "fix the bug"  # 非交互（一次性任务）
 claude --help
 ```
 
-从用户视角看，Claude Code 就是个终端命令。但本质上它是一个 **Agentic System（智能体系统）**。
-
-### 本质：一个 Agent 运行时
+从用户视角看，Claude Code 是一个终端命令；从系统本质看，它是一个 **Agent 运行时**：
 
 | 维度     | 普通 CLI 工具      | Claude Code（Agent 系统）            |
 | -------- | ------------------ | ------------------------------------ |
@@ -32,7 +30,9 @@ claude --help
 | 工具调用 | 硬编码             | 动态决策调用哪个工具                 |
 | 错误处理 | 报错退出           | 自动重试 / 换策略                    |
 
-### 运行时技术栈
+---
+
+## 1.2 运行时与发布形态
 
 Claude Code **不是** Node.js 的解释型脚本，而是：
 
@@ -44,15 +44,15 @@ Claude Code **不是** Node.js 的解释型脚本，而是：
   入口链接：~/.local/bin/claude -> ~/.local/share/claude/versions/2.1.x
 ```
 
-> 💡 **为什么用 Bun 编译？**
->
-> - 启动速度比 Node.js 快 ~3x
-> - 打包为单一二进制，无需 node_modules
-> - 源码保护（编译后无法直接读取 JS 源码）
+选择 Bun 编译的目的（核心动机）：
+
+- 启动速度快
+- 单一二进制，避免 node_modules
+- 源码保护（编译后无法直接读取 JS 源码）
 
 ---
 
-## 1.2 进程启动流程
+## 1.3 进程启动流程
 
 ### 宏观启动链路
 
@@ -80,10 +80,10 @@ Claude Code **不是** Node.js 的解释型脚本，而是：
 [4] 进入交互模式 或 直接执行（-p 参数）
     │
     ▼
-[5] 启动 Agent Loop（见模块二）
+[5] 启动 Agent Loop（详见模块二）
 ```
 
-### 关键配置加载顺序
+### 配置加载优先级
 
 ```
 优先级（高 → 低）：
@@ -94,20 +94,20 @@ Claude Code **不是** Node.js 的解释型脚本，而是：
 ⑤ 内置默认值
 ```
 
-### 重要环境变量
+### 常用环境变量
 
 ```bash
-ANTHROPIC_API_KEY          # 必须：API 密钥
-ANTHROPIC_MODEL            # 可选：指定模型（默认 claude-sonnet-4）
-ANTHROPIC_BASE_URL         # 可选：自定义 API 端点（代理场景）
-ANTHROPIC_MAX_TOKENS       # 可选：最大输出 token
-CLAUDE_BASH_TIMEOUT_MS     # Bash 工具超时（默认 120000ms）
+ANTHROPIC_API_KEY             # 必须：API 密钥
+ANTHROPIC_MODEL               # 可选：指定模型
+ANTHROPIC_BASE_URL            # 可选：自定义 API 端点（代理场景）
+ANTHROPIC_MAX_TOKENS          # 可选：最大输出 token
+CLAUDE_BASH_TIMEOUT_MS        # Bash 工具超时（默认 120000ms）
 CLAUDE_CODE_MAX_OUTPUT_TOKENS # 最大输出 token 数
 ```
 
 ---
 
-## 1.3 核心组件拆解（三层架构）
+## 1.4 三层架构与组件职责
 
 ### 架构总览
 
@@ -119,30 +119,13 @@ CLAUDE_CODE_MAX_OUTPUT_TOKENS # 最大输出 token 数
                          │
 ┌────────────────────────▼────────────────────────────────┐
 │                  Agent 核心层 (Core Layer)                │
-│                                                         │
-│   ┌─────────────┐    ┌─────────────┐                   │
-│   │  nO 主循环   │◄──►│  h2A 消息队列 │                   │
-│   │ (Agent Loop)│    │(Async Queue) │                   │
-│   └──────┬──────┘    └──────┬──────┘                   │
-│          │                  │                           │
-│   ┌──────▼──────────────────▼──────┐                   │
-│   │         Context Manager         │                   │
-│   │  (消息历史 + Token 预算管理)       │                   │
-│   └─────────────────────────────────┘                   │
-│                                                         │
-│   ┌─────────────────────────────────┐                   │
-│   │         Permission System        │                   │
-│   │  (操作审批 + 沙箱边界)             │                   │
-│   └─────────────────────────────────┘                   │
+│   主循环 (Agent Loop) │ 消息队列 │ Context Manager │ 权限系统 │
 └────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
-│                   工具执行层 (Tool Layer)                  │
-│                                                         │
-│   Read  │ Write  │ Edit  │ Bash  │ Glob  │ Grep  │ ...  │
-│                                                         │
-│   MCP Servers（外部工具扩展）                              │
-└─────────────────────────────────────────────────────────┘
+│                   工具执行层 (Tool Layer)                 │
+│  Read │ Write │ Edit │ Bash │ Glob │ Grep │ ... │ MCP     │
+└────────────────────────┬────────────────────────────────┘
                          │
 ┌────────────────────────▼────────────────────────────────┐
 │               集成层 (Integration Layer)                  │
@@ -150,46 +133,39 @@ CLAUDE_CODE_MAX_OUTPUT_TOKENS # 最大输出 token 数
 └─────────────────────────────────────────────────────────┘
 ```
 
-### 各层职责详解
+### 各层职责
 
-#### 📺 用户交互层
+**用户交互层**
 
-- **Terminal**：默认交互界面，支持富文本渲染（颜色、进度条）
-- **IDE Extension**：VS Code / JetBrains 插件，嵌入 IDE 侧边栏
-- **Desktop App**：独立 GUI 应用（macOS/Windows）
-- **Browser**：网页版入口
+- Terminal、IDE 插件、桌面端、浏览器只是入口不同
+- 核心 Agent 逻辑一致，UI 只负责展示与输入
 
-多种入口，但**核心 Agent 逻辑完全一致**，只是 UI 层不同。
+**Agent 核心层**
 
-#### 🧠 Agent 核心层（最重要）
+| 组件              | 内部代号 | 职责                                   |
+| ----------------- | -------- | -------------------------------------- |
+| 主循环            | `nO`     | 单线程循环，驱动整个 Agent 运转         |
+| 消息队列          | `h2A`    | 异步双缓冲，处理事件与用户打断          |
+| Context Manager   | -        | 管理 messages 历史，控制 Token 预算     |
+| Permission System | -        | 工具调用审批与沙箱边界控制              |
 
-| 组件                  | 内部代号 | 职责                                   |
-| --------------------- | -------- | -------------------------------------- |
-| **主循环**            | `nO`     | 单线程 while 循环，驱动整个 Agent 运转 |
-| **消息队列**          | `h2A`    | 异步双缓冲队列，处理实时事件与用户打断 |
-| **Context Manager**   | -        | 管理 messages 数组，控制 Token 预算    |
-| **Permission System** | -        | 拦截危险操作，请求用户审批             |
-
-#### 🔧 工具执行层
+**工具执行层**
 
 - 接收 LLM 的 `tool_use` 指令
-- 在本地文件系统/Shell 中**真实执行**
-- 将执行结果序列化为 `tool_result` 返回给 Agent Loop
+- 在本地文件系统或 Shell 中执行
+- 将结果序列化为 `tool_result` 返回
 
-#### 🔌 集成层
+**集成层**
 
-- **Anthropic API**：通过 SSE 与 Claude 模型通信
-- **MCP（Model Context Protocol）**：标准化外部工具接入协议
-- **Git**：代码版本管理集成
-- **LSP**：语言服务器协议（代码理解增强）
+- Anthropic API：SSE 流式通信
+- MCP：外部工具接入协议
+- Git / LSP：代码与语义能力增强
 
 ---
 
-## 1.4 与 Anthropic API 的通信协议
+## 1.5 与 Anthropic API 的通信协议
 
-### 通信方式：Server-Sent Events（SSE）
-
-Claude Code 与 API 的通信采用 **SSE 流式传输**，而非一次性请求/响应：
+### 通信方式：SSE（Server-Sent Events）
 
 ```
 Claude Code                        Anthropic API
@@ -202,14 +178,14 @@ Claude Code                        Anthropic API
      │ ────────────────────────────────►│
      │                                  │
      │◄─ data: {"type":"message_start"} │
-     │◄─ data: {"type":"content_block"} │  流式返回
-     │◄─ data: {"type":"content_delta"} │  token by token
+     │◄─ data: {"type":"content_block"} │
+     │◄─ data: {"type":"content_delta"} │
      │◄─ data: {"type":"tool_use"}      │
      │◄─ data: {"type":"message_stop"}  │
      │                                  │
 ```
 
-### 单次 API 请求的结构（关键）
+### 单次请求结构（关键字段）
 
 ```json
 {
@@ -224,101 +200,40 @@ Claude Code                        Anthropic API
     ]},
     {"role": "user", "content": [
       {"type": "tool_result", "tool_use_id": "t1", "content": "...文件内容..."}
-    ]},
-    ... // 历史对话完整保留
+    ]}
   ],
   "tools": [
-    {"name": "Read", "description": "...", "input_schema": {...}},
-    {"name": "Write", "description": "...", "input_schema": {...}},
-    ... // 所有可用工具的 JSON Schema 定义
+    {"name": "Read", "description": "...", "input_schema": {}},
+    {"name": "Write", "description": "...", "input_schema": {}}
   ]
 }
 ```
 
-### 关键设计：LLM 是无状态的
-
-```
-⚠️ 重要认知：
-
-Claude 模型本身完全无状态！
-它不记得上一次对话说了什么。
-
-Claude Code 的 CLI 负责：
-  ✅ 维护完整的 messages 历史数组
-  ✅ 每次 API 调用时把全部历史带上
-  ✅ 管理 token 预算（历史太长时压缩）
-
-这就是为什么 context window 管理如此关键！
-```
-
-### API 响应的 stop_reason 控制循环
-
-```javascript
-// 伪代码：Agent Loop 如何根据 stop_reason 决定行为
-while (true) {
-  const response = await callAPI(messages, tools);
-
-  if (response.stop_reason === "end_turn") {
-    // LLM 没有调用工具，任务完成，退出循环
-    displayToUser(response.text);
-    break;
-  }
-
-  if (response.stop_reason === "tool_use") {
-    // LLM 请求调用工具，执行工具并继续循环
-    const toolResults = await executeTools(response.tool_calls);
-    messages.push(assistantMessage(response));
-    messages.push(userMessage(toolResults));
-    // 继续下一轮循环
-  }
-
-  if (response.stop_reason === "max_tokens") {
-    // Token 超限，需要压缩上下文
-    compressContext(messages);
-  }
-}
-```
+> 说明：API 响应中的 `stop_reason` 会驱动 Agent Loop 的继续或结束，具体逻辑见模块二。
 
 ---
 
-## 1.5 控制流引擎视角（对照）
+## 1.6 核心要点总结
 
-从控制流分析的视角来看，Claude Code 的“编排引擎”承担的是**流式状态机 + 请求构建器**的角色，核心位置在架构的 Agent 核心层与工具执行层之间：
-
-1. **入口阶段**：先做上下文预算与压缩判定，再组装 system prompt 与工具定义，保证请求可控可复用。
-2. **流式阶段**：通过 SSE 事件驱动状态机，按块解析模型输出与工具输入 JSON。
-3. **执行阶段**：把 tool_use 转换为本地工具调用，并将结果回写到 messages。
-4. **裁决阶段**：权限系统在每次工具调用前进行 allow/ask/deny 判定。
-5. **递归阶段**：完成一轮后回到主循环，直到 stop_reason 表示结束。
-
-这条主线解释了为何架构层必须同时关注：**流式通道、消息状态、工具执行、权限裁决**四个面向。
+| 知识点     | 关键结论                                      |
+| ---------- | --------------------------------------------- |
+| 运行时     | Bun 编译为二进制，非 Node.js 解释执行         |
+| 架构       | 交互层 → 核心层 → 工具层 → 集成层             |
+| 启动流程   | 初始化 → 连接 API → 进入 Agent Loop           |
+| 通信协议   | SSE 流式，每次请求携带完整对话历史            |
+| 配置优先级 | CLI 参数 > 环境变量 > 项目配置 > 全局配置     |
 
 ---
 
-## 🔑 核心要点总结
+## 1.7 思考题
 
-| 知识点         | 关键结论                                      |
-| -------------- | --------------------------------------------- |
-| **运行时**     | Bun 编译为二进制，非 Node.js 解释执行         |
-| **架构**       | 三层：交互层 → Agent 核心层 → 工具执行层      |
-| **主循环**     | 单线程 while 循环（内部代号 `nO`），简单可靠  |
-| **消息队列**   | 异步双缓冲 `h2A`，实现打断/实时控制           |
-| **通信协议**   | SSE 流式，每次请求携带完整对话历史            |
-| **LLM 无状态** | 状态由 CLI 的 messages 数组维护，不是模型维护 |
-| **循环控制**   | API 返回 `stop_reason` 决定继续还是退出       |
+1. Claude Code 为什么坚持“单一 Agent Loop”，而不做多线程并发？
+2. SSE 与一次性请求/响应相比，对用户体验有什么直接影响？
+3. 如果 API 响应变慢，你会从哪些环节排查瓶颈？
 
 ---
 
-## 📝 思考题
-
-1. 为什么 Claude Code 选择**单线程** Agent Loop，而不是多线程并发？
-2. `h2A` 异步消息队列解决了什么问题？如果没有它会怎样？
-3. 每次 API 请求都携带完整历史，context 越来越长，性能如何保证？（→ 模块五）
-4. 工具执行层与 MCP 是什么关系？（→ 模块三）
-
----
-
-## 📚 延伸阅读
+## 1.8 延伸阅读
 
 - [官方文档：Claude Code Overview](https://docs.anthropic.com/en/docs/claude-code/overview)
 - [官方文档：Settings 配置](https://docs.anthropic.com/en/docs/claude-code/settings)
@@ -327,4 +242,4 @@ while (true) {
 
 ---
 
-> ✅ 模块一完成。下一步：**模块二 - Agent Loop（核心循环机制）**
+模块一完成。下一步：模块二 - Agent Loop（核心循环机制）

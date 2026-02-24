@@ -1,6 +1,6 @@
 # 模块二：Agent Loop（智能体循环）⭐ 最核心
 
-> 学习目标：深度理解 Claude Code 的 Agent Loop 运作机制，掌握"思考→行动→观察"的完整循环
+> 学习目标：深度理解 Claude Code 的 Agent Loop 运作机制，掌握“思考→行动→观察”的完整循环
 >
 > 这是整个 Claude Code 体系中**最核心**的模块，理解它等于理解了 Agent 的灵魂。
 
@@ -10,14 +10,14 @@
 
 ### 什么是 Agent Loop？
 
-Agent Loop 是 Claude Code 的"心跳"。可以用一句话概括：
+Agent Loop 是 Claude Code 的“心跳”。一句话概括：
 
-> **LLM 不断思考→决定调用工具→观察结果→继续思考，直到任务完成。**
+> **LLM 不断思考 → 决定调用工具 → 观察结果 → 继续思考，直到任务完成。**
 
 ### 三步循环图解
 
 ```
-用户输入："帮我修复 app.js 中的 bug"
+用户输入：“帮我修复 app.js 中的 bug”
          │
          ▼
 ╔═════════════════════════════════════════════╗
@@ -35,14 +35,12 @@ Agent Loop 是 Claude Code 的"心跳"。可以用一句话概括：
 ║  │  Step 2: ACT（行动）                │    ║
 ║  │  • Claude 输出 tool_use 请求        │    ║
 ║  │  • CLI 解析并执行对应工具           │    ║
-║  │    （Read文件 / 执行Bash / 写入等） │    ║
 ║  └──────────────┬──────────────────────┘    ║
 ║                 │                           ║
 ║                 ▼                           ║
 ║  ┌─────────────────────────────────────┐    ║
 ║  │  Step 3: OBSERVE（观察）            │    ║
-║  │  • 工具执行结果作为 tool_result     │    ║
-║  │    追加到 messages 历史             │    ║
+║  │  • tool_result 追加到 messages      │    ║
 ║  │  • 返回顶部继续循环                 │    ║
 ║  └──────────────┬──────────────────────┘    ║
 ║                 │                           ║
@@ -56,50 +54,36 @@ Agent Loop 是 Claude Code 的"心跳"。可以用一句话概括：
     输出最终结果给用户
 ```
 
-### 完整的一次任务执行流程（可视化）
-
-以"修复 bug"为例：
+### 一次任务的完整执行流程（示例）
 
 ```
 轮次 1:
-  [用户]   "帮我修复 app.js 中的 null 指针 bug"
-  [Claude] 思考："我需要先读一下 app.js"
-           → tool_use: Read("app.js")
+  [用户]   “修复 app.js 的 null 指针 bug”
+  [Claude] tool_use: Read("app.js")
   [CLI]    执行 Read，返回文件内容
-  [messages] 追加 tool_result
 
 轮次 2:
-  [Claude] 思考："看到第42行有问题，需要检查上下文"
-           → tool_use: Read("utils.js")
-  [CLI]    执行 Read，返回 utils.js 内容
-  [messages] 继续追加
+  [Claude] tool_use: Read("utils.js")
+  [CLI]    返回 utils.js 内容
 
 轮次 3:
-  [Claude] 思考："找到根因了，修复 app.js 第42行"
-           → tool_use: Write("app.js", 修复后的内容)
+  [Claude] tool_use: Write("app.js", 修复后的内容)
   [CLI]    执行写入
-  [messages] 追加写入结果
 
 轮次 4:
-  [Claude] 思考："验证一下修复是否有效"
-           → tool_use: Bash("node app.js")
-  [CLI]    执行命令，返回输出
-  [messages] 追加运行结果
+  [Claude] tool_use: Bash("npm test")
+  [CLI]    返回测试结果
 
 轮次 5:
-  [Claude] 思考："运行正常，任务完成"
-           → text: "已修复 app.js 第42行的 null 指针问题..."
-           stop_reason: "end_turn"  ← 没有 tool_use！
-  [循环结束] 显示结果给用户
+  [Claude] text: “已修复并通过测试”
+  stop_reason: "end_turn" → 退出循环
 ```
 
 ---
 
 ## 2.2 何时终止循环：停止条件判断逻辑
 
-### stop_reason 决定一切
-
-每次 API 响应都包含 `stop_reason`，它是循环的"方向盘"：
+每次 API 响应都包含 `stop_reason`，它决定循环是否继续：
 
 | stop_reason     | 含义               | Agent 行为             |
 | --------------- | ------------------ | ---------------------- |
@@ -111,56 +95,32 @@ Agent Loop 是 Claude Code 的"心跳"。可以用一句话概括：
 ### 迭代安全阀：最大循环次数
 
 ```
-默认最大迭代次数：100 次
-（可通过配置修改：maxIterations）
-
-为什么需要限制？
-→ 防止 Agent 陷入无限循环（如：重复读同一个文件却没有进展）
-→ 防止意外产生极高 API 费用
-
-触发限制后：
-→ 强制停止循环
-→ 告知用户任务未完成
-→ 用户可以继续追问，人工引导
+默认最大迭代次数：100 次（可配置）
+作用：防止陷入无进展的死循环或过高费用。
+触发后：强制停止并提示用户。
 ```
 
-### 用户主动打断（h2A 队列的作用）
+### 用户主动打断（h2A 队列）
 
 ```
-用户在 Agent 运行中按 Ctrl+C：
-  │
-  ▼
-h2A 消息队列接收打断信号
-  │
-  ▼
-当前 API 流式响应被中止（interruptible streaming）
-  │
-  ▼
-Agent Loop 在安全检查点退出
+用户按 Ctrl+C：
+  h2A 接收打断信号 → 中止流式响应 → 在安全检查点退出
 （不会在工具执行中途强行终止，避免文件损坏）
-  │
-  ▼
-等待用户新指令（可以从当前进度继续）
 ```
 
 ---
 
 ## 2.3 多轮对话的 messages 数组如何演化
 
-### messages 是 Agent 的"记忆"
-
-LLM 无状态，messages 数组就是它的"外部记忆"。每轮循环后，数组都会增长。
-
-### 一次完整任务的 messages 演化过程
+LLM 无状态，`messages` 数组就是它的“外部记忆”。每轮循环都会增长：
 
 ```javascript
-// 初始状态：只有用户输入
+// 初始状态
 messages = [
   { role: "user", content: "帮我修复 app.js 的 bug" }
 ]
 
-// ── 第1轮 API 调用 ──
-// Claude 响应：请求 Read 工具
+// 第1轮：Claude 请求 Read 工具
 messages = [
   { role: "user", content: "帮我修复 app.js 的 bug" },
   { role: "assistant", content: [
@@ -169,48 +129,17 @@ messages = [
   ]}
 ]
 
-// CLI 执行 Read 工具后，追加 tool_result
+// CLI 执行后追加 tool_result（以 user 角色）
 messages = [
-  { role: "user",      content: "帮我修复 app.js 的 bug" },
+  { role: "user", content: "帮我修复 app.js 的 bug" },
   { role: "assistant", content: [/* text + tool_use */] },
-  { role: "user",      content: [  // ← tool_result 以 user 角色追加！
-    { type: "tool_result", tool_use_id: "tu_001", content: "// app.js\nfunction foo() {...}" }
-  ]}
-]
-
-// ── 第2轮 API 调用（带上全部历史）──
-// Claude 分析文件后，请求 Write 工具
-messages = [
-  ...之前所有消息...,
-  { role: "assistant", content: [
-    { type: "text", text: "第42行有问题，我来修复" },
-    { type: "tool_use", id: "tu_002", name: "Write", input: { path: "app.js", content: "..." } }
-  ]},
   { role: "user", content: [
-    { type: "tool_result", tool_use_id: "tu_002", content: "文件写入成功" }
-  ]}
-]
-
-// ── 最终轮（stop_reason: end_turn）──
-messages = [
-  ...所有历史消息...,
-  { role: "assistant", content: [
-    { type: "text", text: "已完成修复，第42行的 null check 问题已解决" }
-    // 注意：没有 tool_use！→ stop_reason = "end_turn"
+    { type: "tool_result", tool_use_id: "tu_001", content: "// app.js ..." }
   ]}
 ]
 ```
 
-### 关键规则
-
-```
-⚠️ 必须理解的约束：
-
-1. tool_result 必须紧跟对应的 tool_use，角色为 "user"
-2. 每个 tool_use 都有唯一 id，tool_result 通过 tool_use_id 与之对应
-3. 并行工具调用时，多个 tool_result 在同一个 user message 中
-4. messages 顺序必须是 user/assistant 交替（API 强制要求）
-```
+> 说明：`tool_use / tool_result` 的格式与约束详见模块三（Tool Use 协议）。
 
 ---
 
@@ -222,29 +151,16 @@ messages = [
 工具执行失败
     │
     ▼
-CLI 将错误信息封装为 tool_result（带 is_error: true）
+CLI 将错误信息封装为 tool_result（is_error: true）
     │
     ▼
-┌──────────────────────────────────────────────┐
-│ tool_result = {                              │
-│   tool_use_id: "tu_001",                    │
-│   content: "Error: File not found: foo.js", │
-│   is_error: true   ← 关键标志               │
-│ }                                            │
-└──────────────────────────────────────────────┘
+发送给 Claude，进入下一轮
     │
     ▼
-发送给 Claude，继续下一轮 API 调用
-    │
-    ▼
-Claude 看到错误信息，自主决策：
-  ├── 尝试不同的路径重试
-  ├── 先用 Glob 搜索文件再读取
-  ├── 告知用户文件不存在
-  └── 换一种方法解决同样的目标
+Claude 根据错误选择：重试 / 换策略 / 询问用户
 ```
 
-### 常见错误场景与 Claude 的自动应对
+### 常见错误场景与 Claude 的应对
 
 | 错误类型             | Claude 的典型应对策略              |
 | -------------------- | ---------------------------------- |
@@ -257,54 +173,17 @@ Claude 看到错误信息，自主决策：
 ### 无限循环的识别与防护
 
 ```
-危险模式：Agent 陷入无效循环
-  循环1: Bash("npm test") → 报错
-  循环2: Read("test.js") → 读取
-  循环3: Write("test.js", 相同内容) → 写入
-  循环4: Bash("npm test") → 同样报错
-  ...（无进展，重复）
-
-Claude Code 的防护机制：
-  ✅ 最大迭代次数限制（默认100次）
+危险模式：重复调用相同工具却无进展
+防护机制：
+  ✅ 最大迭代次数限制
   ✅ 用户可随时 Ctrl+C 打断
-  ✅ Claude 模型自身会检测进度停滞并改变策略
-  ✅ Hooks 可注入额外上下文提示（见模块八）
+  ✅ 模型自行检测停滞并改变策略
+  ✅ Hooks 可注入额外提示（见模块八）
 ```
 
 ---
 
-## 2.5 并行工具调用（Parallel Tool Use）
-
-Claude Code 支持在单次响应中**同时调用多个工具**：
-
-```javascript
-// Claude 的一次响应中包含多个 tool_use
-{
-  role: "assistant",
-  content: [
-    { type: "text", text: "我同时读取这三个文件" },
-    { type: "tool_use", id: "tu_001", name: "Read", input: { path: "a.js" } },
-    { type: "tool_use", id: "tu_002", name: "Read", input: { path: "b.js" } },
-    { type: "tool_use", id: "tu_003", name: "Read", input: { path: "c.js" } },
-  ]
-}
-
-// CLI 并行执行三个 Read，统一在一个 user message 中返回
-{
-  role: "user",
-  content: [
-    { type: "tool_result", tool_use_id: "tu_001", content: "// a.js 内容" },
-    { type: "tool_result", tool_use_id: "tu_002", content: "// b.js 内容" },
-    { type: "tool_result", tool_use_id: "tu_003", content: "// c.js 内容" },
-  ]
-}
-```
-
-**并行执行的好处**：读取多个文件时，速度提升 N 倍（并发 I/O 而非串行）
-
----
-
-## 2.6 实验：手动模拟一次 Agent Loop
+## 2.5 实验：手动模拟一次 Agent Loop
 
 用 Node.js 代码体验 Agent Loop 的完整流程（简化版）：
 
@@ -356,27 +235,21 @@ async function agentLoop(userInput) {
     });
 
     console.log("stop_reason:", response.stop_reason);
-
-    // 追加 assistant 消息到历史
     messages.push({ role: "assistant", content: response.content });
 
-    // 2. 判断是否结束
+    // 2. 结束条件
     if (response.stop_reason === "end_turn") {
       const text = response.content.find((b) => b.type === "text");
       console.log("\n✅ 任务完成:", text?.text);
       break;
     }
 
-    // 3. ACT + OBSERVE：执行工具，收集结果
+    // 3. ACT + OBSERVE
     if (response.stop_reason === "tool_use") {
       const toolResults = [];
       const toolUses = response.content.filter((b) => b.type === "tool_use");
 
-      // 并行执行所有工具
       for (const toolUse of toolUses) {
-        console.log(
-          `  执行工具: ${toolUse.name}(${JSON.stringify(toolUse.input)})`,
-        );
         const result = await executeTool(toolUse.name, toolUse.input);
         toolResults.push({
           type: "tool_result",
@@ -385,66 +258,38 @@ async function agentLoop(userInput) {
         });
       }
 
-      // 追加 tool_result 到历史（以 user 角色）
       messages.push({ role: "user", content: toolResults });
     }
   }
 }
 
-// 运行
-agentLoop("读取 package.json 并告诉我这个项目的名称和版本号");
+agentLoop("读取 package.json 并告诉我项目的名称和版本号");
 ```
 
-**运行这个实验**，你将亲眼看到 messages 如何随每轮循环增长！
-
 ---
 
-## 2.7 控制流阶段对照（状态机视角）
-
-结合控制流分析视角，可以把 Agent Loop 的“Think → Act → Observe”映射为更细粒度的阶段：
-
-1. **Context 预算与压缩**：进入 Think 前先判定是否需要 compaction，避免超限导致失败。
-2. **System Prompt 组装**：构建本轮请求（CLAUDE.md、工具定义、repo 结构等）。
-3. **流式生成与解析**：通过 SSE 事件驱动状态机，增量解析 text 与 tool_use 输入。
-4. **工具执行管线**：只读可并行、写入顺序执行，形成 tool_result。
-5. **权限裁决**：工具执行前进行 allow/ask/deny 决策。
-6. **递归轮次**：tool_result 追加到 messages 后进入下一轮，直到 stop_reason == end_turn。
-
-这套分解能帮助你理解：Agent Loop 不只是“思考/行动/观察”，而是一个可拆分的编排流水线。
-
----
-
-## 🔑 核心要点总结
+## 2.6 核心要点总结
 
 | 知识点            | 关键结论                                           |
 | ----------------- | -------------------------------------------------- |
-| **循环本质**      | 单线程 while 循环，简单但强大                      |
-| **终止信号**      | `stop_reason === "end_turn"` 时退出                |
-| **迭代上限**      | 默认 100 次，防止死循环                            |
-| **messages 增长** | 每轮追加 assistant + user(tool_result)，线性增长   |
-| **错误处理**      | `is_error: true` 的 tool_result 让 Claude 自主应对 |
-| **并行工具**      | 单次响应可含多个 tool_use，CLI 并发执行提速        |
-| **用户打断**      | 通过 h2A 队列实现安全中断，不会损坏文件            |
+| 循环本质          | 单线程 while 循环驱动 Agent                        |
+| 终止信号          | `stop_reason === "end_turn"` 时退出               |
+| 迭代上限          | 默认 100 次，防止死循环                            |
+| messages 增长     | 每轮追加 assistant + user(tool_result)，线性增长   |
+| 错误处理          | `is_error: true` 让 Claude 自主应对失败            |
+| 用户打断          | h2A 队列实现安全中断，不会损坏文件                  |
 
 ---
 
-## 📝 思考题
+## 2.7 思考题
 
-1. 如果 Claude 连续 3 轮都调用同一个工具但没有进展，你会如何检测并打破死循环？
-   - **解答**：可以通过在 `agentLoop` 中维护一个简单的计数器或哈希表，记录最近几轮的 `tool_use` 名称和参数。如果检测到连续多次完全相同的调用且 `tool_result` 也没有变化，可以在下一轮 `user` 消息中注入干预提示（如“你已陷入死循环，请尝试其他方法”），或者直接强制终止并报错。
-
-2. 并行工具调用中，如果 `tu_001` 成功而 `tu_002` 失败，Claude 收到混合结果后会怎么做？
-   - **解答**：Claude 会根据 `tool_result` 中的 `is_error` 字段区分对待。它会利用 `tu_001` 返回的有效信息继续任务，同时分析 `tu_002` 的报错原因（如参数错误、文件不存在等），在下一轮循环中尝试修正错误或向用户反馈失败。
-
-3. messages 线性增长 → context 越来越长 → 如何解决？（→ 模块五：Context 管理）
-   - **解答**：可以通过截断（Truncation）、总结（Summarization）或使用 Prompt Caching 来优化。在后续的“模块五”中，我们将详细讨论如何通过滑动窗口机制和动态上下文压缩来维持长效对话。
-
-4. 为什么 tool_result 的 role 是 `"user"` 而不是 `"tool"` 或其他？
-   - **解答**：这是 Anthropic Messages API 的设计规范。在 API 层面，对话由 `user` 和 `assistant` 交替进行。工具执行结果被视为环境（作为用户的延伸）对模型请求的反馈，因此必须放在 `user` 角色的消息中。这种设计保持了角色模型的简洁性，将所有非模型生成的内容统一归类为用户输入。
+1. 如果 Claude 连续多轮调用同一个工具但没有进展，你会如何检测并打破死循环？
+2. stop_reason 除了 `end_turn` 与 `tool_use` 外，还有哪些常见取值？
+3. 如果用户频繁 Ctrl+C 打断，会对上下文与任务推进造成哪些影响？
 
 ---
 
-## 📚 延伸阅读
+## 2.8 延伸阅读
 
 - [Anthropic：Tool Use Overview](https://docs.anthropic.com/en/docs/build-with-claude/tool-use/overview)
 - [Anthropic：Agentic Loop Best Practices](https://docs.anthropic.com/en/docs/build-with-claude/tool-use/implement-tool-use)
@@ -452,4 +297,4 @@ agentLoop("读取 package.json 并告诉我这个项目的名称和版本号");
 
 ---
 
-> ✅ 模块二完成。下一步：**模块三 - Tool Use 工具调用系统**
+模块二完成。下一步：模块三 - Tool Use 工具调用系统
