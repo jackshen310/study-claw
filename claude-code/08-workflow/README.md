@@ -501,7 +501,7 @@ jobs:
 
 ## 📝 思考题
 
-1. PreToolUse 和 permissions.deny 都能拦截工具调用，有什么区别？分别适用什么场景？
+
 2. SessionStart 的 stdout 注入到 Claude context 有什么限制？会增加多少 token 消耗？
 3. `async: true` 的 Hook 如果执行失败，Claude 还能感知到吗？
 4. 如何利用 Hook 系统实现"每次文件修改后自动运行对应的测试"？

@@ -399,6 +399,21 @@ agentLoop("读取 package.json 并告诉我这个项目的名称和版本号");
 
 ---
 
+## 2.7 控制流阶段对照（状态机视角）
+
+结合控制流分析视角，可以把 Agent Loop 的“Think → Act → Observe”映射为更细粒度的阶段：
+
+1. **Context 预算与压缩**：进入 Think 前先判定是否需要 compaction，避免超限导致失败。
+2. **System Prompt 组装**：构建本轮请求（CLAUDE.md、工具定义、repo 结构等）。
+3. **流式生成与解析**：通过 SSE 事件驱动状态机，增量解析 text 与 tool_use 输入。
+4. **工具执行管线**：只读可并行、写入顺序执行，形成 tool_result。
+5. **权限裁决**：工具执行前进行 allow/ask/deny 决策。
+6. **递归轮次**：tool_result 追加到 messages 后进入下一轮，直到 stop_reason == end_turn。
+
+这套分解能帮助你理解：Agent Loop 不只是“思考/行动/观察”，而是一个可拆分的编排流水线。
+
+---
+
 ## 🔑 核心要点总结
 
 | 知识点            | 关键结论                                           |

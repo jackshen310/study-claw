@@ -547,6 +547,188 @@ await server.connect(transport);
 
 ---
 
+## 3.7 控制流阶段对照（工具管线）
+
+在控制流分析的框架中，Tool Use 属于“模型输出 → 工具执行 → 结果回流”的中间管线，关键点如下：
+
+1. **流式解析入口**：工具输入通常通过 SSE 事件逐步输出，CLI 需要对 tool_input JSON 进行增量解析与校验。
+2. **执行策略**：只读工具可并行、写入工具顺序执行，避免竞态与副作用冲突。
+3. **结果回流**：每个 tool_use 对应 tool_result，按照 id 回填到 messages，成为下一轮的 user 输入。
+4. **边界控制**：工具管线与权限系统强耦合，执行前必须通过 allow/ask/deny 判定。
+
+这解释了为什么 Tool Use 不只是“调用 API”，而是控制流中的关键中间层。
+
+---
+
+## 3.8 深入：文件编辑管道的内部实现
+
+> 来源：[Southbridge.AI - File Editing Analysis](https://www.southbridge.ai/blog/claude-code-an-analysis-file-editing)（对 Claude Code 编译产物的逆向分析）
+
+### 四阶段编辑管道（所有编辑工具共用）
+
+```
+用户触发 Edit / MultiEdit / Write
+           │
+    Phase 1: Validation（验证）
+           │  ① 路径安全检查（绝对路径 + 越界检测 + 敏感路径拦截）
+           │  ② Permission 审批（allow/ask/deny 见模块四）
+           │  ③ 文件状态检查（mtime 对比，检测外部修改）
+           │  ④ 内容正确性（old_string 存在 + 数量对）
+           │  ⑤ 安全扫描
+           ↓
+    Phase 2: Preparation（准备）
+           │  读取缓存、检测文件编码（UTF-8/UTF-16/ASCII）
+           │  检测行尾符（\n / \r\n / \r）
+           ↓
+    Phase 3: Application（执行）
+           │  字符串精确替换 / 覆盖写入（保留原编码 + 行尾符）
+           ↓
+    Phase 4: Verification（验证）
+           │  生成 unified diff（返回给 Claude 作为观察结果）
+           │  更新文件状态缓存（mtime + content hash）
+           │  生成编辑位置上下文片段（±5 行）
+           ↓
+       返回 EditResult 给 Claude（作为 tool_result）
+```
+
+---
+
+### ⚠️ 行号陷阱：最常见的 Edit 失败原因
+
+Read 工具的输出**带行号前缀**（`1\t代码内容`），但 Edit 的 `old_string` **必须不含行号**。
+
+```
+Read 返回给 Claude 的内容：
+  1    function hello() {
+  2      console.log('Hello, world!');
+  3    }
+
+❌ 错误（含行号）：
+  old_string = "2  console.log('Hello, world!');"
+
+✅ 正确（去掉行号和Tab）：
+  old_string = "  console.log('Hello, world!');"
+```
+
+**系统的自动检测与提示**：
+
+如果 `old_string` 包含行号模式（`^\d+\t`），系统会：
+
+1. 报错提示"old_string contains line number prefix"
+2. 自动给出去掉行号后的 suggestion
+3. 如果完全找不到匹配，还会尝试推测是哪一行并提示
+
+> 这是 Claude Code 错误恢复设计的典型样本：不只报错，还给出下一步行动建议。
+
+---
+
+### EditTool：精确字符串替换的关键设计
+
+**强制 "先 Read 再 Edit" 不是约定，是技术强制：**
+
+```
+EditTool 执行步骤：
+  Step 1: 检查 readFileState 缓存（必须有之前的 Read 记录）
+           → 缓存不存在 → 立即报错："File must be read with ReadFileTool before editing"
+  Step 2: 对比当前文件 mtime 与缓存的 timestamp
+           → 不一致 → 报错："File has been modified externally. Please read again."
+  Step 3: 验证 old_string
+           → 找不到 → 报错 + findSimilarStrings 提示
+           → 数量 ≠ expected_replacements → 报错（防意外多替换）
+  Step 4: 执行替换（字节精确，保留编码和行尾符）
+  Step 5: 生成 diff + 更新缓存
+```
+
+**`expected_replacements` 的价值：**
+
+```javascript
+// 如果 old_string 在文件中有 3 处匹配：
+// 不设 expected_replacements → 默认期望 1 次 → 报错，要求澄清
+// 设 expected_replacements: 3 → 允许替换全部 3 处
+
+// 设计原因：避免 Claude 意外替换不该动的位置
+```
+
+---
+
+### MultiEditTool：内存模拟 + 一次写入的原子性
+
+```
+MultiEdit 的执行策略（不是"执行一个写一次"）：
+
+Step 1: 加载文件（从缓存）
+Step 2: 在内存副本上模拟所有 edits（Dry Run）
+         → 检测三类冲突：
+           ① 依赖冲突：edit[j].old_string 依赖 edit[i] 的结果（但顺序错了）
+           ② 位置重叠：两个 edit 修改的文本区域有交叉
+           ③ 逻辑矛盾：edit[i] 和 edit[j] 替换同一文本为不同内容
+         → 任何 edit 找不到匹配 → 全部中止
+Step 3: 全部验证通过 → 一次性写入磁盘（原子操作）
+Step 4: 更新缓存
+
+关键：
+  中途失败 → 文件完全不变（no partial writes）
+  类比：数据库事务（all or nothing）
+```
+
+---
+
+### 五层验证防护（Path Safety 细节）
+
+```javascript
+// Layer 1 - 路径安全：
+validatePath(filePath) {
+  // 必须是绝对路径
+  if (!path.isAbsolute(filePath)) → 报错 + suggest path.resolve()
+
+  // 防止 path traversal 攻击（../../../etc/passwd）
+  if (resolved !== normalized) → 报错
+
+  // 禁止越界（只允许 projectRoot + additionalWorkingDirectories）
+  if (!allowed.some(dir => resolved.startsWith(dir))) → 报错
+
+  // 禁止修改敏感路径（正则匹配）：
+  forbidden = [/.git\//, /node_modules\//, /\.env$/, /\.ssh\//, /\.gnupg\//]
+}
+```
+
+---
+
+### 错误恢复：三路合并（外部修改冲突）
+
+这是文章中最精彩的部分——当文件在 Claude 编辑过程中**被外部（如另一程序）修改**时：
+
+```
+情况：Claude 读取了文件（cached），之后文件被外部修改了
+
+恢复策略（三路合并）：
+  Base  = 上次 Read 时的缓存内容
+  Ours  = Claude 要应用的修改
+  Theirs = 外部修改后的当前文件内容
+
+  ① 无冲突 → 自动合并 + 警告用户
+  ② 有冲突 → 插入 git 风格的冲突标记（<<<<<<< / ======= / >>>>>>>）
+  ③ 无法合并 → 返回三个选项：
+     a. 覆盖（丢弃外部改动）
+     b. 中止（保留外部改动）
+     c. 重新读取（让 Claude 看到新内容后重新决策）
+```
+
+---
+
+### 边界情况的精细处理
+
+| 情况       | 处理方式                                                              |
+| ---------- | --------------------------------------------------------------------- |
+| 空文件     | Edit 拒绝（报错建议用 Write）；Read 返回 `<system-reminder>` 标签提示 |
+| 二进制文件 | 前 8192 字节检测 null byte + magic number（PNG/JPG/PDF/ZIP）          |
+| 符号链接   | 提示"将修改目标文件"，允许继续                                        |
+| 编码检测   | BOM 检测 → UTF-8/UTF-16 → ASCII fallback → 不确定时警告               |
+| 磁盘满     | 报告需要多少字节 + 分析哪些目录可清理                                 |
+| 写入不完整 | 检查 `.backup` / `.tmp` 临时文件，尝试自动恢复                        |
+
+---
+
 ## 🔑 核心要点总结
 
 | 知识点          | 关键结论                                                        |
